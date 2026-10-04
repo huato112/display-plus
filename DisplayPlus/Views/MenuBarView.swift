@@ -504,13 +504,12 @@ struct ConnectAllDisplaysRow: View {
 // MARK: - DisplayPowerToggle
 
 /// Compact on/off switch shown trailing in each display's header row — disconnects/reconnects the
-/// display from the desktop. Hidden when the private enable/disable API is unavailable. The first
-/// time the built-in display is turned off, asks for confirmation. On failure (e.g. the last-active
-/// guard) the switch snaps back to the real state.
+/// display from the desktop, with the same behavior for built-in and external displays. Hidden when
+/// the private enable/disable API is unavailable. On failure (e.g. the last-active guard) the switch
+/// snaps back to the real state.
 struct DisplayPowerToggle: View {
     @ObservedObject var display: DisplayInfo
     @EnvironmentObject var displayManager: DisplayManager
-    @State private var showBuiltinConfirm = false
     @State private var errorMessage: String?
 
     var body: some View {
@@ -525,30 +524,13 @@ struct DisplayPowerToggle: View {
                 }
                 Toggle("", isOn: Binding(
                     get: { display.isEnabled },
-                    set: { newValue in
-                        let firstBuiltinOff = !newValue && display.isBuiltin
-                            && !UserDefaults.standard.bool(forKey: "fd.display.builtinDisconnectConfirmed")
-                        if firstBuiltinOff {
-                            showBuiltinConfirm = true
-                        } else {
-                            apply(connected: newValue)
-                        }
-                    }
+                    set: { apply(connected: $0) }
                 ))
                 .labelsHidden()
                 .toggleStyle(.switch)
                 .controlSize(.mini)
                 .help(display.isEnabled ? "Turn this display off (disconnect from the desktop)"
                                         : "Turn this display on")
-            }
-            .alert("Disconnect built-in display?", isPresented: $showBuiltinConfirm) {
-                Button("Cancel", role: .cancel) {}
-                Button("Disconnect", role: .destructive) {
-                    UserDefaults.standard.set(true, forKey: "fd.display.builtinDisconnectConfirmed")
-                    apply(connected: false)
-                }
-            } message: {
-                Text("The built-in screen turns off and windows move to your external display. It reconnects automatically if you reboot with no external display attached.")
             }
         }
     }
