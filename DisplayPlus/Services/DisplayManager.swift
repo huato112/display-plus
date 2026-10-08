@@ -1,6 +1,9 @@
 import Foundation
 import Combine
 import CoreGraphics
+import OSLog
+
+private let displayRecoveryLogger = Logger(subsystem: "com.displayplus.app", category: "DisplayRecovery")
 
 // Global C-compatible callback for display reconfiguration.
 // Must be a top-level function (not a closure) to be used as a C function pointer.
@@ -11,6 +14,7 @@ private func displayReconfigCallback(
 ) {
     guard let ptr = userInfo else { return }
     let manager = Unmanaged<DisplayManager>.fromOpaque(ptr).takeUnretainedValue()
+    displayRecoveryLogger.notice("Reconfiguration id=\(displayID, privacy: .public), flags=\(flags.rawValue, privacy: .public)")
 
     let connectionChanges: CGDisplayChangeSummaryFlags = [
         .addFlag, .removeFlag, .enabledFlag, .disabledFlag, .desktopShapeChangedFlag
@@ -39,6 +43,9 @@ class DisplayManager: ObservableObject {
     // nonisolated(unsafe) allows deinit (which is nonisolated in Swift 6) to access this value.
     nonisolated(unsafe) private var callbackContext: UnsafeMutableRawPointer?
     private var reconfigurationRefreshTask: Task<Void, Never>?
+    nonisolated(unsafe) private var recoveryTimer: Timer?
+    nonisolated(unsafe) private var recoveryActivity: NSObjectProtocol?
+    private var lastRecoverySnapshot: String?
 
     init() {
         setupReconfigCallback()
@@ -46,6 +53,10 @@ class DisplayManager: ObservableObject {
     }
 
     deinit {
+        recoveryTimer?.invalidate()
+        if let activity = recoveryActivity {
+            ProcessInfo.processInfo.endActivity(activity)
+        }
         if let ctx = callbackContext {
             CGDisplayRemoveReconfigurationCallback(displayReconfigCallback, ctx)
             Unmanaged<DisplayManager>.fromOpaque(ctx).release()
@@ -63,7 +74,20 @@ class DisplayManager: ObservableObject {
     }
 
     func refreshDisplays() {
-        guard var displayIDs = onlineDisplayIDs() else { return }
+        updateRecoveryMonitoring()
+        guard var displayIDs = onlineDisplayIDs() else {
+            displayRecoveryLogger.error("Online display enumeration failed")
+            return
+        }
+        if recoveryTimer != nil {
+            let snapshot = "online=\(displayIDs.sorted()); tracked=" + displays.map {
+                "\($0.displayID):builtin=\($0.isBuiltin),active=\(CGDisplayIsActive($0.displayID)),online=\(CGDisplayIsOnline($0.displayID)),hw=v\(CGDisplayVendorNumber($0.displayID))-m\(CGDisplayModelNumber($0.displayID))-s\(CGDisplaySerialNumber($0.displayID))"
+            }.joined(separator: ";")
+            if snapshot != lastRecoverySnapshot {
+                displayRecoveryLogger.notice("Safety monitor snapshot \(snapshot, privacy: .public)")
+                lastRecoverySnapshot = snapshot
+            }
+        }
 
         if DisplayConnectionService.shared.recoverBuiltinIfNeeded(
             onlineDisplayIDs: displayIDs, knownDisplays: displays
@@ -124,6 +148,38 @@ class DisplayManager: ObservableObject {
             display.isMain = CGDisplayIsMain(display.displayID) != 0
             display.isEnabled = CGDisplayIsActive(display.displayID) != 0
             display.isOnline = CGDisplayIsOnline(display.displayID) != 0
+        }
+        updateRecoveryMonitoring()
+    }
+
+    /// A last-screen unplug can omit the callback or finish after the short retries.
+    /// Poll independently of menu visibility until the built-in off state is cleared.
+    private func updateRecoveryMonitoring() {
+        let shouldMonitor = DisplayConnectionService.shared.needsBuiltinRecoveryMonitoring(knownDisplays: displays)
+        if shouldMonitor, recoveryTimer == nil {
+            // Prevent App Nap from throttling the safety timer while still allowing sleep.
+            recoveryActivity = ProcessInfo.processInfo.beginActivity(
+                options: .userInitiatedAllowingIdleSystemSleep,
+                reason: "Restore the built-in display when the external display is unplugged"
+            )
+            let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    self?.refreshDisplays()
+                }
+            }
+            timer.tolerance = 0.1
+            RunLoop.main.add(timer, forMode: .common)
+            recoveryTimer = timer
+            displayRecoveryLogger.notice("Built-in safety monitor started")
+        } else if !shouldMonitor, recoveryTimer != nil {
+            recoveryTimer?.invalidate()
+            recoveryTimer = nil
+            if let activity = recoveryActivity {
+                ProcessInfo.processInfo.endActivity(activity)
+                recoveryActivity = nil
+            }
+            lastRecoverySnapshot = nil
+            displayRecoveryLogger.notice("Built-in safety monitor stopped")
         }
     }
 
@@ -210,6 +266,7 @@ class DisplayManager: ObservableObject {
             ? DisplayConnectionService.shared.reconnect(display)
             : DisplayConnectionService.shared.disconnect(display)
         if err == nil {
+            updateRecoveryMonitoring()
             Task { @MainActor in
                 try? await Task.sleep(nanoseconds: 400_000_000)
                 self.refreshDisplays()

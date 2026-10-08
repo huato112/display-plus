@@ -19,6 +19,8 @@ enum DisplaySystem {
     static var fullListAvailable = true
     static var toggleAvailable = true
     static var failReconnect = false
+    static var deferReconnect = false
+    static var invalidPublicIDs: Set<CGDirectDisplayID> = []
     static var writes: [(CGDirectDisplayID, Bool)] = []
 
     static var onlineIDs: [CGDirectDisplayID] {
@@ -33,25 +35,47 @@ enum DisplaySystem {
         fullListAvailable = true
         toggleAvailable = true
         failReconnect = false
+        deferReconnect = false
+        invalidPublicIDs = []
         writes = []
     }
 }
 
 @MainActor
-func CGDisplayIsActive(_ id: CGDirectDisplayID) -> Int32 { DisplaySystem.panels[id]?.active == true ? 1 : 0 }
+func CGDisplayIsActive(_ id: CGDirectDisplayID) -> Int32 {
+    DisplaySystem.invalidPublicIDs.contains(id) ? -1 : (DisplaySystem.panels[id]?.active == true ? 1 : 0)
+}
 @MainActor
-func CGDisplayIsBuiltin(_ id: CGDirectDisplayID) -> Int32 { DisplaySystem.panels[id]?.builtin == true ? 1 : 0 }
+func CGDisplayIsBuiltin(_ id: CGDirectDisplayID) -> Int32 {
+    DisplaySystem.invalidPublicIDs.contains(id) ? -1 : (DisplaySystem.panels[id]?.builtin == true ? 1 : 0)
+}
 @MainActor
-func CGDisplayVendorNumber(_ id: CGDirectDisplayID) -> UInt32 { DisplaySystem.panels[id]?.vendor ?? 0 }
+func CGDisplayIsOnline(_ id: CGDirectDisplayID) -> Int32 {
+    DisplaySystem.invalidPublicIDs.contains(id) ? -1 : (DisplaySystem.panels[id]?.online == true ? 1 : 0)
+}
 @MainActor
-func CGDisplayModelNumber(_ id: CGDirectDisplayID) -> UInt32 { DisplaySystem.panels[id]?.model ?? 0 }
+func CGDisplayVendorNumber(_ id: CGDirectDisplayID) -> UInt32 {
+    DisplaySystem.invalidPublicIDs.contains(id) ? UInt32.max : (DisplaySystem.panels[id]?.vendor ?? 0)
+}
 @MainActor
-func CGDisplaySerialNumber(_ id: CGDirectDisplayID) -> UInt32 { DisplaySystem.panels[id]?.serial ?? 0 }
+func CGDisplayModelNumber(_ id: CGDirectDisplayID) -> UInt32 {
+    DisplaySystem.invalidPublicIDs.contains(id) ? UInt32.max : (DisplaySystem.panels[id]?.model ?? 0)
+}
+@MainActor
+func CGDisplaySerialNumber(_ id: CGDirectDisplayID) -> UInt32 {
+    DisplaySystem.invalidPublicIDs.contains(id) ? UInt32.max : (DisplaySystem.panels[id]?.serial ?? 0)
+}
 @MainActor
 @discardableResult
 func CGGetActiveDisplayList(_ maxDisplays: UInt32, _ ids: UnsafeMutablePointer<CGDirectDisplayID>?,
                             _ count: UnsafeMutablePointer<UInt32>?) -> CGError {
-    count?.pointee = UInt32(DisplaySystem.panels.values.filter { $0.active }.count)
+    let active = DisplaySystem.panels.filter { $0.value.active }.map { $0.key }
+    if let ids {
+        for (index, id) in active.prefix(Int(maxDisplays)).enumerated() { ids[index] = id }
+        count?.pointee = UInt32(min(Int(maxDisplays), active.count))
+    } else {
+        count?.pointee = UInt32(active.count)
+    }
     return .success
 }
 
@@ -77,6 +101,8 @@ enum CGSDisplayService {
     static func setDisplayEnabled(_ enabled: Bool, for id: CGDirectDisplayID) -> Bool {
         DisplaySystem.writes.append((id, enabled))
         guard DisplaySystem.panels[id] != nil, !(enabled && DisplaySystem.failReconnect) else { return false }
+        if enabled && DisplaySystem.deferReconnect { return true }
+        DisplaySystem.invalidPublicIDs.remove(id)
         DisplaySystem.panels[id]?.active = enabled
         DisplaySystem.panels[id]?.online = enabled
         return true
@@ -213,6 +239,80 @@ struct DisplayConnectionRecoveryTests {
             precondition(!recover(service))
             precondition(service.isMarkedDisconnected(hardwareID: "v1-m1-s1"))
             precondition(DisplaySystem.writes.isEmpty)
+        }
+        scenario("accepted transaction keeps monitor armed until activation is verified") { service, _ in
+            let builtin = DisplayInfo(1)
+            precondition(service.disconnect(builtin) == nil)
+            unplug()
+            DisplaySystem.deferReconnect = true
+            precondition(recover(service, [builtin]))
+            precondition(service.isMarkedDisconnected(hardwareID: builtin.hardwareID))
+            precondition(service.isDisconnected(displayID: 1))
+            precondition(service.needsBuiltinRecoveryMonitoring(knownDisplays: [builtin]))
+            DisplaySystem.panels[1]?.active = true
+            DisplaySystem.panels[1]?.online = true
+            precondition(!recover(service, [builtin]))
+            precondition(!service.needsBuiltinRecoveryMonitoring(knownDisplays: [builtin]))
+        }
+        scenario("monitor remains armed beyond initial retries without any callback") { service, _ in
+            let builtin = DisplayInfo(1)
+            precondition(service.disconnect(builtin) == nil)
+            for _ in 0..<10 {
+                precondition(service.needsBuiltinRecoveryMonitoring(knownDisplays: [builtin]))
+                precondition(!recover(service, [builtin]))
+            }
+            unplug()
+            precondition(recover(service, [builtin]))
+            precondition(!service.needsBuiltinRecoveryMonitoring(knownDisplays: [builtin]))
+        }
+        scenario("monitor discovers off built-in after relaunch with no cached rows") { service, defaults in
+            defaults.set(true, forKey: "fd.display.disconnected.v1-m1-s1")
+            DisplaySystem.panels[1]?.active = false
+            DisplaySystem.panels[1]?.online = false
+            precondition(service.needsBuiltinRecoveryMonitoring(knownDisplays: []))
+        }
+        scenario("headless virtual fallback must not block built-in recovery") { service, _ in
+            let builtin = DisplayInfo(1)
+            precondition(service.disconnect(builtin) == nil)
+            unplug()
+            DisplaySystem.panels[6] = DisplaySystem.Panel(builtin: false, active: true, online: true,
+                                                         vendor: 0x756e6b6e, model: 0x76697274, serial: 0)
+            // The actual unplug logs also showed -1 public query results for the off panel.
+            DisplaySystem.invalidPublicIDs.insert(1)
+            precondition(recover(service, [builtin]))
+            precondition(CGDisplayIsActive(1) > 0)
+            precondition(!service.isMarkedDisconnected(hardwareID: builtin.hardwareID))
+        }
+        scenario("virtual fallback cannot bypass the last-physical-screen guard") { service, _ in
+            unplug()
+            DisplaySystem.panels[6] = DisplaySystem.Panel(builtin: false, active: true, online: true,
+                                                         vendor: 0, model: 0, serial: 0)
+            precondition(service.disconnect(DisplayInfo(1)) != nil)
+            precondition(CGDisplayIsActive(1) > 0)
+            precondition(DisplaySystem.writes.isEmpty)
+        }
+        scenario("wake restore cannot turn built-in off beside a virtual fallback") { service, defaults in
+            unplug()
+            DisplaySystem.panels[6] = DisplaySystem.Panel(builtin: false, active: true, online: true,
+                                                         vendor: 0x756e6b6e, model: 0x76697274, serial: 0)
+            defaults.set(true, forKey: "fd.display.disconnected.v1-m1-s1")
+            service.restoreAll(displays: [DisplayInfo(1), DisplayInfo(6)])
+            precondition(CGDisplayIsActive(1) > 0)
+            precondition(DisplaySystem.writes.isEmpty)
+        }
+        scenario("relaunch caches off panel before headless queries become unavailable") { service, defaults in
+            defaults.set(true, forKey: "fd.display.disconnected.v1-m1-s1")
+            DisplaySystem.panels[1]?.active = false
+            DisplaySystem.panels[1]?.online = false
+            precondition(service.needsBuiltinRecoveryMonitoring(knownDisplays: []))
+            unplug()
+            DisplaySystem.invalidPublicIDs.insert(1)
+            DisplaySystem.panels[6] = DisplaySystem.Panel(builtin: false, active: true, online: true,
+                                                         vendor: 0x756e6b6e, model: 0x76697274, serial: 0)
+            precondition(service.needsBuiltinRecoveryMonitoring(knownDisplays: []))
+            precondition(recover(service))
+            precondition(CGDisplayIsActive(1) > 0)
+            precondition(!service.needsBuiltinRecoveryMonitoring(knownDisplays: []))
         }
         print("\(passed) display recovery scenarios passed")
     }

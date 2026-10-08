@@ -49,6 +49,9 @@ The app runs in the menu bar. It does not require Accessibility or Screen Record
 Run the display recovery regression scenarios with `bash tests/run-display-recovery.sh`.
 They compile the connection service against simulated display APIs and isolated preferences,
 without changing your actual displays. Unplug/reconnect behavior still needs hardware verification.
+While the built-in display is turned off, a safety timer checks every second for the loss of
+the last real external screen. WindowServer's headless virtual fallback does not count as a
+remaining screen. Recovery diagnostics use the `com.displayplus.app` / `DisplayRecovery` system log.
 
 ## Source layout
 

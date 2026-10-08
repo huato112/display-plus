@@ -1,5 +1,6 @@
 import Foundation
 import CoreGraphics
+import OSLog
 
 /// Low-level wrapper over the private CoreGraphics Services (CGS / SkyLight) display-mode API.
 ///
@@ -17,6 +18,7 @@ import CoreGraphics
 /// `@_silgen_name` or a link-time `extern`) — the CGS mode-enumeration symbols live in SkyLight,
 /// which the app does not link against.
 enum CGSDisplayService {
+    private static let recoveryLogger = Logger(subsystem: "com.displayplus.app", category: "DisplayRecovery")
 
     /// One entry in the private CGS display-mode table.
     struct Mode: Equatable, Sendable {
@@ -191,12 +193,22 @@ enum CGSDisplayService {
     static func setDisplayEnabled(_ enabled: Bool, for display: CGDirectDisplayID) -> Bool {
         guard let beginCfg, let setEnabled, let completeCfg else { return false }
         var cfg: UnsafeMutableRawPointer? = nil
-        guard beginCfg(&cfg) == 0 else { return false }
-        guard setEnabled(cfg, display, enabled) == 0 else {
+        let beginResult = beginCfg(&cfg)
+        guard beginResult == 0 else {
+            recoveryLogger.error("Begin display transaction failed id=\(display, privacy: .public), error=\(beginResult, privacy: .public)")
+            return false
+        }
+        let setResult = setEnabled(cfg, display, enabled)
+        guard setResult == 0 else {
+            recoveryLogger.error("Set display enabled failed id=\(display, privacy: .public), enabled=\(enabled, privacy: .public), error=\(setResult, privacy: .public)")
             _ = cancelCfg?(cfg)
             return false
         }
         let kCGConfigurePermanently: UInt32 = 2
-        return completeCfg(cfg, kCGConfigurePermanently) == 0
+        let completeResult = completeCfg(cfg, kCGConfigurePermanently)
+        if completeResult != 0 {
+            recoveryLogger.error("Complete display transaction failed id=\(display, privacy: .public), error=\(completeResult, privacy: .public)")
+        }
+        return completeResult == 0
     }
 }
