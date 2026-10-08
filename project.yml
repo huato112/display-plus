@@ -25,7 +25,5 @@ targets:
         CODE_SIGNING_REQUIRED: NO
         CODE_SIGN_IDENTITY: "-"
         SWIFT_STRICT_CONCURRENCY: minimal
-        SWIFT_OBJC_BRIDGING_HEADER: DisplayPlus/DisplayPlus-Bridging-Header.h
         GENERATE_INFOPLIST_FILE: YES
-        INFOPLIST_KEY_NSScreenCaptureUsageDescription: "Display+ needs Screen Recording permission to show a live preview of each display."
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon

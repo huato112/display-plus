@@ -64,295 +64,81 @@ struct ExpandableRow: View {
 
 struct MenuBarView: View {
     @EnvironmentObject var displayManager: DisplayManager
-    @ObservedObject private var updateService = UpdateService.shared
-    @ObservedObject private var settings = SettingsService.shared
-    @ObservedObject private var virtualDisplayService = VirtualDisplayService.shared
     @State private var expandedDisplayIDs: Set<CGDirectDisplayID> = []
-    @State private var showArrangement: Bool = false
-    @State private var showVirtualDisplays: Bool = false
-    @State private var showAutoBrightness: Bool = false
-    @State private var showSettings: Bool = false
-    @State private var quitHovered = false
     @State private var hasInitialExpanded = false
+    @State private var quitHovered = false
 
-    private var visibleDisplays: [DisplayInfo] {
-        displayManager.displays.filter { !virtualDisplayService.isVirtualDisplay($0.displayID) }
-    }
-
-    /// Displays marked disconnected in a *previous* session (persisted) that aren't currently in the
-    /// list — they dropped off the OS online list and we have no live ID to reconnect them inline.
-    /// Recovered as a group via "Connect all displays".
-    private var hasGhostDisconnects: Bool {
+    private var hasUnlistedDisconnects: Bool {
         DisplayConnectionService.shared.hasUnlistedDisconnects(amongListed: displayManager.displays)
     }
 
     var body: some View {
         VStack(spacing: 0) {
-        ScrollView(.vertical, showsIndicators: false) {
-            VStack(alignment: .leading, spacing: Theme.cardSpacing) {
-                // DISPLAYS — unified list; a display turned off shows dimmed with its switch off.
-                SectionHeader("Displays")
-                Card {
-                    ForEach(visibleDisplays) { display in
-                        VStack(spacing: 0) {
-                            DisplayRowView(
-                                display: display,
-                                isExpanded: expandedDisplayIDs.contains(display.displayID),
-                                onToggleExpand: {
-                                    guard display.isEnabled else { return }
-                                    if expandedDisplayIDs.contains(display.displayID) {
-                                        expandedDisplayIDs.remove(display.displayID)
-                                    } else {
-                                        expandedDisplayIDs.insert(display.displayID)
+            ScrollView(.vertical, showsIndicators: false) {
+                VStack(alignment: .leading, spacing: Theme.cardSpacing) {
+                    SectionHeader("Displays")
+                    Card {
+                        ForEach(displayManager.displays) { display in
+                            VStack(spacing: 0) {
+                                DisplayRowView(
+                                    display: display,
+                                    isExpanded: expandedDisplayIDs.contains(display.displayID),
+                                    onToggleExpand: {
+                                        guard display.isEnabled else { return }
+                                        if expandedDisplayIDs.contains(display.displayID) {
+                                            expandedDisplayIDs.remove(display.displayID)
+                                        } else {
+                                            expandedDisplayIDs.insert(display.displayID)
+                                        }
                                     }
+                                )
+                                if display.isEnabled && expandedDisplayIDs.contains(display.displayID) {
+                                    DisplayDetailView(display: display)
                                 }
-                            )
-                            if display.isEnabled && expandedDisplayIDs.contains(display.displayID) {
-                                DisplayDetailView(display: display)
                             }
                         }
-                    }
-                    if hasGhostDisconnects {
-                        ConnectAllDisplaysRow()
-                    }
-                }
-
-                // PRESETS
-                SectionHeader("Presets")
-                Card { PresetListView() }
-
-                // ARRANGE — only meaningful with more than one display.
-                if visibleDisplays.count > 1 {
-                    SectionHeader("Arrange")
-                    Card {
-                        ExpandableRow(
-                            icon: "rectangle.3.offgrid",
-                            iconColor: Theme.accent,
-                            label: "Arrange Displays",
-                            isExpanded: $showArrangement
-                        )
-                        if showArrangement {
-                            ArrangementView()
-                                .environmentObject(displayManager)
-                                .transition(.opacity.combined(with: .move(edge: .top)))
+                        if hasUnlistedDisconnects {
+                            ConnectAllDisplaysRow()
                         }
                     }
                 }
-
-                // BRIGHTNESS — unified slider, when enabled in Settings.
-                if settings.showCombinedBrightness {
-                    SectionHeader("Brightness")
-                    Card { CombinedBrightnessView(displays: displayManager.displays) }
-                }
-
-                // TOOLS
-                SectionHeader("Tools")
-                Card {
-                    ExpandableRow(
-                        icon: "display.2",
-                        iconColor: Theme.accent,
-                        label: "Virtual Displays",
-                        isExpanded: $showVirtualDisplays
-                    )
-                    if showVirtualDisplays {
-                        VirtualDisplayView()
-                            .padding(.leading, 8)
-                            .transition(.opacity.combined(with: .move(edge: .top)))
-                    }
-                    ExpandableRow(
-                        icon: "sun.and.horizon.fill",
-                        iconColor: .orange,
-                        label: "Auto Brightness",
-                        isExpanded: $showAutoBrightness
-                    )
-                    if showAutoBrightness {
-                        AutoBrightnessView()
-                            .padding(.leading, 8)
-                            .transition(.opacity.combined(with: .move(edge: .top)))
-                    }
-                }
-
-                // SETTINGS (+ update banner)
-                SectionHeader("Settings")
-                Card {
-                    ExpandableRow(
-                        icon: "gearshape.fill",
-                        iconColor: .gray,
-                        label: "Settings",
-                        isExpanded: $showSettings
-                    )
-                    if showSettings {
-                        SettingsView()
-                            .padding(.leading, 8)
-                            .transition(.opacity.combined(with: .move(edge: .top)))
-                    }
-                    if updateService.hasUpdate, let ver = updateService.latestVersion {
-                        HStack {
-                            Image(systemName: "arrow.down.circle.fill")
-                                .foregroundColor(.green)
-                                .frame(width: 20)
-                                .accessibilityHidden(true)
-                            Text("New update v\(ver) available")
-                                .font(.caption)
-                                .foregroundColor(.green)
-                            Spacer()
-                            Button("View") { updateService.openReleasePage() }
-                                .buttonStyle(.plain)
-                                .font(.caption)
-                                .foregroundColor(.green)
-                                .help("Download and install the latest version")
-                        }
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 5)
-                        .background(Color.green.opacity(0.08))
-                        .cornerRadius(6)
-                        .padding(.horizontal, 8)
-                    }
-                }
             }
-        }
 
-        Divider().opacity(0.3)
-
-        // Version + Quit row (fixed at bottom, outside scroll)
-        HStack {
-            Text("Display+ v\(updateService.currentVersion)")
-                .font(.caption)
-                .fontWeight(.medium)
-                .foregroundColor(.secondary)
-            Spacer()
-            Button(action: {
-                NSApplication.shared.terminate(nil)
-            }) {
-                HStack(spacing: 3) {
-                    Image(systemName: "xmark")
-                        .accessibilityHidden(true)
-                    Text("Quit")
+            Divider().opacity(Theme.dividerOpacity)
+            HStack {
+                Text("Display+")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                Spacer()
+                Button {
+                    NSApplication.shared.terminate(nil)
+                } label: {
+                    Label("Quit", systemImage: "xmark")
+                        .padding(.horizontal, Theme.lg)
+                        .padding(.vertical, Theme.sm)
+                        .background(Theme.hover(quitHovered))
+                        .cornerRadius(Theme.md)
                 }
-                .font(.body)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-                .background(quitHovered ? Color.primary.opacity(0.06) : .clear)
-                .cornerRadius(6)
-                .contentShape(Rectangle())
+                .buttonStyle(.plain)
+                .foregroundColor(quitHovered ? .red : .secondary)
+                .onHover { quitHovered = $0 }
+                .help("Quit Display+")
             }
-            .buttonStyle(.plain)
-            .foregroundColor(quitHovered ? .red : .secondary)
-            .onHover { quitHovered = $0 }
-            .help("Quit Display+")
+            .padding(.horizontal, Theme.rowHPadding)
+            .padding(.vertical, Theme.md)
         }
-        // Footer bar keeps its own padding — it's a fixed bottom bar, not a Theme list row.
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6)
-
-        } // end VStack
         .frame(width: Theme.popoverWidth, alignment: .top)
         .tint(Theme.accent)
         .frame(minHeight: Theme.popoverMinHeight, maxHeight: Theme.popoverMaxHeight)
-        .padding(.vertical, 8)
+        .padding(.vertical, Theme.lg)
         .onReceive(displayManager.$displays) { newDisplays in
-            // Only enabled displays can stay expanded; a display turned off collapses automatically.
             let enabledIDs = Set(newDisplays.filter { $0.isEnabled }.map { $0.displayID })
             expandedDisplayIDs = expandedDisplayIDs.intersection(enabledIDs)
-
             if !hasInitialExpanded && !enabledIDs.isEmpty {
                 expandedDisplayIDs = enabledIDs
                 hasInitialExpanded = true
             }
         }
-        .task {
-            if settings.checkUpdatesOnLaunch {
-                await updateService.checkForUpdates()
-            }
-        }
-    }
-}
-
-// MARK: - SettingsView (Phase 12: embedded in MenuBarView)
-
-struct SettingsView: View {
-    @ObservedObject private var settings = SettingsService.shared
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            // Launch at Login toggle
-            Toggle(isOn: Binding(
-                get: { settings.launchAtLogin },
-                set: { newValue in
-                    if newValue {
-                        LaunchService.shared.enable()
-                    } else {
-                        LaunchService.shared.disable()
-                    }
-                    settings.launchAtLogin = newValue
-                }
-            )) {
-                HStack(spacing: 6) {
-                    MenuItemIcon(systemName: "power", color: .green)
-                        .accessibilityHidden(true)
-                    Text("Launch at Login")
-                        .font(.body)
-                }
-            }
-            .toggleStyle(.switch)
-            .controlSize(.small)
-            .padding(.horizontal, 12)
-            .help("Automatically launch Display+ at login")
-
-            // First-launch prompt: recommend enabling launch at login
-            if !settings.launchAtLoginPrompted {
-                HStack(spacing: 6) {
-                    Image(systemName: "info.circle")
-                        .foregroundColor(.secondary)
-                        .frame(width: 16)
-                        .accessibilityHidden(true)
-                    Text("Recommended to launch at login")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                    Spacer()
-                    Button("Got it") {
-                        settings.launchAtLoginPrompted = true
-                    }
-                    .buttonStyle(.borderless)
-                    .font(.caption)
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 2)
-                .onAppear {
-                    // Mark as prompted so it only shows once
-                    // User dismisses manually via "Got it" button
-                }
-            }
-
-            // Show Combined Brightness toggle
-            Toggle(isOn: $settings.showCombinedBrightness) {
-                HStack(spacing: 6) {
-                    MenuItemIcon(systemName: "sun.min.fill", color: .yellow)
-                        .accessibilityHidden(true)
-                    Text("Show Combined Brightness Control")
-                        .font(.body)
-                }
-            }
-            .toggleStyle(.switch)
-            .controlSize(.small)
-            .padding(.horizontal, 12)
-            .help("Show unified brightness slider for all displays in menu bar")
-
-            // Check for updates on launch toggle
-            Toggle(isOn: $settings.checkUpdatesOnLaunch) {
-                HStack(spacing: 6) {
-                    MenuItemIcon(systemName: "arrow.clockwise.circle", color: Theme.accent)
-                        .accessibilityHidden(true)
-                    Text("Check for updates on launch")
-                        .font(.body)
-                }
-            }
-            .toggleStyle(.switch)
-            .controlSize(.small)
-            .padding(.horizontal, 12)
-            .help("Automatically check for new versions on every launch")
-        }
-        .padding(.vertical, 6)
     }
 }
 
@@ -360,7 +146,6 @@ struct SettingsView: View {
 
 struct DisplayRowView: View {
     @ObservedObject var display: DisplayInfo
-    @EnvironmentObject var displayManager: DisplayManager
     @State private var isHovered: Bool = false
 
     let isExpanded: Bool
@@ -427,24 +212,6 @@ struct DisplayRowView: View {
         .background(Theme.hover(isHovered))
         .animation(.easeInOut(duration: 0.15), value: isHovered)
         .onHover { isHovered = $0 }
-        .contextMenu {
-            Button {
-                if let url = URL(string: "x-apple.systempreferences:com.apple.Displays-Settings") {
-                    NSWorkspace.shared.open(url)
-                }
-            } label: {
-                Label("Open System Settings", systemImage: "display")
-            }
-
-            Divider()
-
-            Button {
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(display.name, forType: .string)
-            } label: {
-                Label("Copy Display Name", systemImage: "doc.on.doc")
-            }
-        }
         .accessibilityLabel("Display: \(display.name)\(display.isMain ? ", Main Display" : "")\(isExpanded ? ", Expanded" : ", Collapsed")")
         .accessibilityHint("Click to expand control panel")
         .accessibilityAddTraits(.isButton)

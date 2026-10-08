@@ -10,8 +10,7 @@ enum CGHelpers {
     /// deadline fires first, `fallback` is returned instead.
     ///
     /// This is useful for any CoreGraphics / WindowServer IPC call that can
-    /// hang indefinitely (e.g. `CGCompleteDisplayConfiguration`,
-    /// `CGVirtualDisplay.apply(_:)`).
+    /// hang indefinitely (e.g. `CGCompleteDisplayConfiguration`).
     ///
     /// - Parameters:
     ///   - seconds:   Maximum time to wait before returning `fallback`.

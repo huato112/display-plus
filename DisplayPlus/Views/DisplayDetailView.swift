@@ -4,11 +4,7 @@ import SwiftUI
 
 struct DisplayDetailView: View {
     @ObservedObject var display: DisplayInfo
-    @EnvironmentObject var displayManager: DisplayManager
     @State private var showModeList: Bool = false
-    @State private var showColorProfile: Bool = false
-    @State private var showImageAdjustment: Bool = false
-    @State private var colorSpaceName: String = ""
 
     private func sectionKey(_ name: String) -> String {
         "fd.expanded.\(display.displayUUID).\(name)"
@@ -26,11 +22,6 @@ struct DisplayDetailView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-
-            // Brightness slider
-            BrightnessSliderView(display: display)
-
-            Divider().opacity(0.3).padding(.vertical, 2)
 
             // HiDPI toggle — before mode list (natural workflow: enable HiDPI → pick resolution)
             HiDPIRowView(display: display)
@@ -61,66 +52,12 @@ struct DisplayDetailView: View {
                     ))
             }
 
-            Divider().opacity(0.3).padding(.vertical, 2)
-
-            // Color profile section
-            ExpandableRow(
-                icon: "paintpalette.fill",
-                iconColor: .purple,
-                label: "Color Profile",
-                subtitle: colorSpaceName,
-                isExpanded: $showColorProfile
-            )
-
-            if showColorProfile {
-                ColorProfileView(display: display)
-                    .padding(.leading, 8)
-                    .transition(.asymmetric(
-                        insertion: .opacity.combined(with: .move(edge: .top)),
-                        removal: .opacity
-                    ))
-            }
-
-            // Image adjustment section
-            ExpandableRow(
-                icon: "slider.horizontal.3",
-                label: "Image Adjustments",
-                isExpanded: $showImageAdjustment
-            )
-
-            if showImageAdjustment {
-                ImageAdjustmentView(display: display)
-                    .padding(.leading, 8)
-                    .transition(.asymmetric(
-                        insertion: .opacity.combined(with: .move(edge: .top)),
-                        removal: .opacity
-                    ))
-            }
-
-            Divider().opacity(0.3).padding(.vertical, 2)
-
-            // Set as main display
-            MainDisplayView(display: display)
-
-            // Notch management (built-in with notch only)
-            NotchView(display: display)
-
         }
         .padding(.leading, 32)
         .background(Color(NSColor.controlBackgroundColor).opacity(0.4))
         .onAppear {
             showModeList = loadExpanded("modeList", default: false)
-            showColorProfile = loadExpanded("colorProfile", default: false)
-            showImageAdjustment = loadExpanded("imageAdjust", default: false)
         }
         .onChange(of: showModeList) { _, v in saveExpanded("modeList", v) }
-        .onChange(of: showColorProfile) { _, v in saveExpanded("colorProfile", v) }
-        .onChange(of: showImageAdjustment) { _, v in saveExpanded("imageAdjust", v) }
-        .task(id: display.displayID) {
-            colorSpaceName = ""
-            guard !Task.isCancelled else { return }
-            colorSpaceName = ColorProfileService.shared.currentColorSpaceName(for: display.displayID)
-        }
     }
 }
-

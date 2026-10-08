@@ -1,6 +1,6 @@
 import Foundation
+import Combine
 import CoreGraphics
-import IOKit
 import AppKit
 
 @MainActor
@@ -12,13 +12,10 @@ class DisplayInfo: ObservableObject, Identifiable {
     @Published var isMain: Bool
     @Published var isOnline: Bool
     @Published var isEnabled: Bool
-    @Published var bounds: CGRect
     @Published var pixelWidth: Int
     @Published var pixelHeight: Int
-    @Published var brightness: Double
     @Published var availableModes: [DisplayMode]
     @Published var currentDisplayMode: DisplayMode?
-    @Published var ddcValues: [UInt8: UInt16?] = [:]
     let vendorNumber: UInt32
     let modelNumber: UInt32
     let serialNumber: UInt32
@@ -38,10 +35,10 @@ class DisplayInfo: ObservableObject, Identifiable {
     /// `CGDisplayCreateUUIDFromDisplayID` can return a real UUID while the display is active but nil
     /// once it's disabled (or vice-versa), so a key captured at disconnect time won't match the live
     /// value later. vendor/model/serial are captured once at init and never flip — use this for the
-    /// disconnect feature's persistence and matching. See [[display-disconnect]].
+    /// disconnect feature's persistence and matching.
     var hardwareID: String { "v\(vendorNumber)-m\(modelNumber)-s\(serialNumber)" }
 
-    /// The native (highest non-HiDPI) resolution, used for HiDPI enablement and presets.
+    /// The native (highest non-HiDPI) resolution, used for HiDPI enablement.
     var nativeResolution: (width: Int, height: Int) {
         let nativeMode = availableModes
             .filter { !$0.isHiDPI }
@@ -56,12 +53,8 @@ class DisplayInfo: ObservableObject, Identifiable {
         self.isMain = CGDisplayIsMain(displayID) != 0
         self.isOnline = CGDisplayIsOnline(displayID) != 0
         self.isEnabled = CGDisplayIsActive(displayID) != 0
-        self.bounds = CGDisplayBounds(displayID)
         self.pixelWidth = CGDisplayPixelsWide(displayID)
         self.pixelHeight = CGDisplayPixelsHigh(displayID)
-        // Use persisted brightness as the initial value if available, otherwise 50.0.
-        // BrightnessService will overwrite this with the real hardware value once probed.
-        self.brightness = SettingsService.shared.brightness(for: displayID) ?? 50.0
         self.availableModes = []
         self.currentDisplayMode = DisplayMode.currentMode(for: displayID)
         let vendor = CGDisplayVendorNumber(displayID)

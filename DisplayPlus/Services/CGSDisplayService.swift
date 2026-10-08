@@ -10,8 +10,7 @@ import CoreGraphics
 /// display, no mirroring, no plist override, no admin rights).
 ///
 /// Verified on macOS 27 / Apple Silicon: with BetterDisplay quit, the `2560×1440 @ backing 5120×2880`
-/// mode is still present in this table and can be set via `setMode`. Full evidence + the byte-offset
-/// reverse engineering: `docs/superpowers/specs/2026-06-21-hidpi-injection-design.md` and
+/// mode is still present in this table and can be set via `setMode`. Byte-offset probes:
 /// `tools/cgs_modedump.swift` / `tools/cgs_probe.swift`.
 ///
 /// Per the project hard rule, every private symbol is resolved with `dlopen` + `dlsym` (never
@@ -28,8 +27,6 @@ enum CGSDisplayService {
         let density: Float       // 2.0 == HiDPI (backing pixels = logical × density)
         let flags: UInt32
 
-        var backingWidth: Int  { Int((Float(width)  * density).rounded()) }
-        var backingHeight: Int { Int((Float(height) * density).rounded()) }
         /// A Retina mode: renders larger then downscales → crisp text.
         var isHiDPI: Bool { density >= 1.5 }
         /// macOS tags "stretched"/non-desktop scaled modes with this high bit; skip them.

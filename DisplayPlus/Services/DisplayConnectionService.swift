@@ -1,4 +1,5 @@
 import Foundation
+import Combine
 import CoreGraphics
 
 /// Per-display on/off — disconnect / reconnect a display from the desktop arrangement
@@ -134,7 +135,7 @@ final class DisplayConnectionService: ObservableObject, @unchecked Sendable {
 
     /// Re-applies persisted disconnect state across `displays`, honoring the safety guards:
     /// never drops active count to 0, and only re-disconnects the built-in display when at least
-    /// one external display is currently active. Call BEFORE the brightness/gamma reapply chain.
+    /// one external display is currently active. Call before restoring mode preferences.
     func restoreAll(displays: [DisplayInfo]) {
         let hasActiveExternal = displays.contains { !$0.isBuiltin && CGDisplayIsActive($0.displayID) != 0 }
         for display in displays where isMarkedDisconnected(hardwareID: display.hardwareID) {

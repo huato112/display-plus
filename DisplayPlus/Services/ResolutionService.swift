@@ -17,11 +17,6 @@ final class ResolutionService: @unchecked Sendable {
         UserDefaults.standard.set(savedModeIDs, forKey: "fd.ResolutionService.savedModes")
     }
 
-    private func clearSavedModeID(for displayID: CGDirectDisplayID) {
-        savedModeIDs.removeValue(forKey: "\(displayID)")
-        UserDefaults.standard.set(savedModeIDs, forKey: "fd.ResolutionService.savedModes")
-    }
-
     /// Re-applies the last user-set mode for `displayID` if it differs from the current active mode.
     /// Called on wake from sleep so macOS mode resets are corrected.
     func reapplySavedModeIfNeeded(for displayID: CGDirectDisplayID) {
@@ -42,33 +37,22 @@ final class ResolutionService: @unchecked Sendable {
         }
     }
 
-    // MARK: - Query
-
-    func availableModes(for displayID: CGDirectDisplayID) -> [DisplayMode] {
-        DisplayMode.availableModes(for: displayID)
-    }
-
-    func currentMode(for displayID: CGDirectDisplayID) -> DisplayMode? {
-        DisplayMode.currentMode(for: displayID)
-    }
-
     // MARK: - Apply
 
     /// Sets a display mode on `displayID`.
     ///
-    /// Mirror-aware: when the target display is a mirror target (e.g. the physical display
-    /// is mirroring a CGVirtualDisplay for HiDPI), the mode must be applied to the mirror
-    /// SOURCE (the virtual display), not to the mirror target itself.
+    /// Mirror-aware: when macOS has configured the target as a mirror target, the mode must be applied to the mirror
+    /// source display.
     /// CGConfigureDisplayWithDisplayMode silently hangs or fails on mirror targets because
     /// their mode is driven by the source.
     ///
     /// Strategy:
-    ///   1. If displayID is a mirror target, resolve to the mirror source (virtualDisplayID).
+    ///   1. If displayID is a mirror target, resolve to the mirror source display.
     ///   2. Find the matching CGDisplayMode on the source by logical size + HiDPI attributes.
     ///   3. Apply via CGConfigureDisplayWithDisplayMode on the source display.
     ///   4. Fallback: try CGSConfigureDisplayMode (private API) on the source.
     func setDisplayMode(_ mode: DisplayMode, for displayID: CGDirectDisplayID) async -> Bool {
-        // Resolve mirror source — the physical display may mirror a virtual display
+        // Resolve mirror source — macOS may have configured display mirroring
         let (targetID, isMirrorRedirect) = resolvedTargetDisplayID(for: displayID)
         #if DEBUG
         if isMirrorRedirect {
@@ -222,27 +206,8 @@ final class ResolutionService: @unchecked Sendable {
 
     // MARK: - CGSConfigureDisplayMode fallback (private API)
 
-    /// Applies a mode by its raw modeID using the CGS private API.
-    /// CGSConfigureDisplayMode(connection, displayID, modeID) bypasses some of the
-    /// restrictions that CGConfigureDisplayWithDisplayMode has on certain display configs.
-    /// Does NOT wrap in a CGBeginDisplayConfiguration transaction — CGSConfigureDisplayMode
-    /// manages its own transaction internally; an empty outer transaction would always succeed
-    /// regardless of whether the mode change actually took effect.
+    /// Uses the shared CGS transaction wrapper when the public mode switch fails.
     private func cgsFallback(modeID: UInt32, on displayID: CGDirectDisplayID) async -> Bool {
-        return await Task.detached(priority: .userInitiated) {
-            let connection = CGSMainConnectionID()
-            CGSConfigureDisplayMode(connection, displayID, modeID)
-
-            // Wait for the mode change to propagate before reading back
-            try? await Task.sleep(nanoseconds: 100_000_000)  // 100ms
-
-            // Verify success by checking whether the active modeID changed
-            let newModeID = CGDisplayCopyDisplayMode(displayID)?.ioDisplayModeID
-            let success = newModeID == Int32(bitPattern: modeID)
-            #if DEBUG
-            print("[ResolutionService] CGS fallback: success=\(success) modeID=\(modeID) displayID=\(displayID) activeModeID=\(newModeID as Any)")
-            #endif
-            return success
-        }.value
+        CGSDisplayService.setMode(Int32(bitPattern: modeID), for: displayID)
     }
 }
