@@ -12,7 +12,10 @@ private func displayReconfigCallback(
     guard let ptr = userInfo else { return }
     let manager = Unmanaged<DisplayManager>.fromOpaque(ptr).takeUnretainedValue()
 
-    let relevant: CGDisplayChangeSummaryFlags = [.addFlag, .removeFlag, .setMainFlag, .setModeFlag]
+    let connectionChanges: CGDisplayChangeSummaryFlags = [
+        .addFlag, .removeFlag, .enabledFlag, .disabledFlag, .desktopShapeChangedFlag
+    ]
+    let relevant = connectionChanges.union([.setMainFlag, .setModeFlag])
     guard !flags.intersection(relevant).isEmpty else { return }
 
     // Skip the begin-configuration notification; only act when the change is complete.
@@ -20,11 +23,11 @@ private func displayReconfigCallback(
     guard !flags.contains(.beginConfigurationFlag) else { return }
 
     Task { @MainActor in
-        if flags.intersection([.addFlag, .removeFlag]).isEmpty {
+        if flags.intersection(connectionChanges).isEmpty {
             // Mode or main-display change: refresh mode info for existing displays only.
             manager.refreshExistingDisplayModes()
         } else {
-            manager.refreshDisplays()
+            manager.handleConnectionChange()
         }
     }
 }
@@ -35,10 +38,11 @@ class DisplayManager: ObservableObject {
 
     // nonisolated(unsafe) allows deinit (which is nonisolated in Swift 6) to access this value.
     nonisolated(unsafe) private var callbackContext: UnsafeMutableRawPointer?
+    private var reconfigurationRefreshTask: Task<Void, Never>?
 
     init() {
-        refreshDisplays()
         setupReconfigCallback()
+        refreshDisplays()
     }
 
     deinit {
@@ -48,14 +52,29 @@ class DisplayManager: ObservableObject {
         }
     }
 
-    func refreshDisplays() {
+    private func onlineDisplayIDs() -> [CGDirectDisplayID]? {
         var displayCount: UInt32 = 0
-        CGGetOnlineDisplayList(0, nil, &displayCount)
-        var displayIDs = [CGDirectDisplayID](repeating: 0, count: Int(displayCount))
-        CGGetOnlineDisplayList(displayCount, &displayIDs, &displayCount)
+        guard CGGetOnlineDisplayList(0, nil, &displayCount) == .success else { return nil }
+        // Keep a valid buffer even when unplugging temporarily leaves zero online displays.
+        let capacity = max(1, displayCount)
+        var ids = [CGDirectDisplayID](repeating: 0, count: Int(capacity))
+        guard CGGetOnlineDisplayList(capacity, &ids, &displayCount) == .success else { return nil }
+        return Array(ids.prefix(Int(displayCount)))
+    }
+
+    func refreshDisplays() {
+        guard var displayIDs = onlineDisplayIDs() else { return }
+
+        if DisplayConnectionService.shared.recoverBuiltinIfNeeded(
+            onlineDisplayIDs: displayIDs, knownDisplays: displays
+        ) {
+            // Reconnect changes the online list. Read it again before updating the UI.
+            guard let refreshedIDs = onlineDisplayIDs() else { return }
+            displayIDs = refreshedIDs
+        }
 
         let currentIDs = Set(displays.map { $0.displayID })
-        let newIDSet = Set((0..<Int(displayCount)).map { displayIDs[$0] })
+        let newIDSet = Set(displayIDs)
 
         // Diff-based refresh: keep existing DisplayInfo objects (preserves @Published state)
         let existingByID = Dictionary(uniqueKeysWithValues: displays.map { ($0.displayID, $0) })
@@ -63,8 +82,7 @@ class DisplayManager: ObservableObject {
         var updatedDisplays: [DisplayInfo] = []
         var addedDisplays: [DisplayInfo] = []
 
-        for i in 0..<Int(displayCount) {
-            let id = displayIDs[i]
+        for id in displayIDs {
             if let existing = existingByID[id] {
                 updatedDisplays.append(existing)
             } else {
@@ -106,6 +124,23 @@ class DisplayManager: ObservableObject {
             display.isMain = CGDisplayIsMain(display.displayID) != 0
             display.isEnabled = CGDisplayIsActive(display.displayID) != 0
             display.isOnline = CGDisplayIsOnline(display.displayID) != 0
+        }
+    }
+
+    /// WindowServer can still be settling immediately after an unplug notification. Retry
+    /// enumeration/recovery briefly, without requiring the menu to be opened by the user.
+    func handleConnectionChange() {
+        refreshDisplays()
+        reconfigurationRefreshTask?.cancel()
+        reconfigurationRefreshTask = Task { @MainActor [weak self] in
+            for delay: UInt64 in [500_000_000, 1_000_000_000, 2_000_000_000] {
+                do {
+                    try await Task.sleep(nanoseconds: delay)
+                } catch {
+                    return
+                }
+                self?.refreshDisplays()
+            }
         }
     }
 

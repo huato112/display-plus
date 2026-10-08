@@ -14,9 +14,11 @@ import CoreGraphics
 @MainActor
 final class DisplayConnectionService: ObservableObject, @unchecked Sendable {
     static let shared = DisplayConnectionService()
-    private init() {}
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+    }
 
-    private let defaults = UserDefaults.standard
+    private let defaults: UserDefaults
     private func key(_ uuid: String) -> String { "fd.display.disconnected.\(uuid)" }
 
     /// Whether this macOS build exposes the private enable/disable API. UI hides controls when false.
@@ -70,6 +72,54 @@ final class DisplayConnectionService: ObservableObject, @unchecked Sendable {
         var count: UInt32 = 0
         CGGetActiveDisplayList(0, nil, &count)
         return Int(count)
+    }
+
+    /// A manually disabled built-in panel must never leave the user without a screen after
+    /// unplugging the last active external display. Use live OS state, not cached UI flags:
+    /// the external row may still be present while a reconfiguration is being processed.
+    /// Returns true when a reconnect transaction was applied and enumeration should be repeated.
+    @discardableResult
+    func recoverBuiltinIfNeeded(onlineDisplayIDs: [CGDirectDisplayID],
+                                knownDisplays: [DisplayInfo]) -> Bool {
+        guard isAvailable else { return false }
+        let hasActiveExternal = onlineDisplayIDs.contains {
+            CGDisplayIsBuiltin($0) == 0 && CGDisplayIsActive($0) != 0
+        }
+        guard !hasActiveExternal else { return false }
+
+        // Disabled panels disappear from the public online list. The full WindowServer list
+        // also finds them after relaunch or when macOS assigns a new display ID after wake.
+        // Keep the in-session objects as a fallback if that private enumeration is unavailable.
+        let existingByID = Dictionary(uniqueKeysWithValues: knownDisplays.map { ($0.displayID, $0) })
+        let liveBuiltinIDs = CGSDisplayService.allKnownDisplayIDs().filter { CGDisplayIsBuiltin($0) != 0 }
+        let candidates = liveBuiltinIDs.isEmpty
+            ? knownDisplays.filter { $0.isBuiltin }.map { $0.displayID }
+            : liveBuiltinIDs
+        var didReconnect = false
+
+        for id in candidates {
+            let existing = existingByID[id]
+            guard CGDisplayIsBuiltin(id) != 0 || existing?.isBuiltin == true else { continue }
+            let hardwareID = existing?.hardwareID
+                ?? "v\(CGDisplayVendorNumber(id))-m\(CGDisplayModelNumber(id))-s\(CGDisplaySerialNumber(id))"
+            guard isDisconnected(displayID: id) || isMarkedDisconnected(hardwareID: hardwareID) else {
+                continue
+            }
+
+            if CGDisplayIsActive(id) == 0 {
+                guard CGSDisplayService.setDisplayEnabled(true, for: id) else {
+                    print("[DisplayConnectionService] Failed to recover built-in display \(id)")
+                    continue
+                }
+                didReconnect = true
+            }
+            // Also clear the off preference if macOS already brought the panel back itself.
+            // Otherwise launch/wake restore could turn it off again when an external returns.
+            setMarked(false, hardwareID: hardwareID)
+            // Remove stale in-session IDs too if macOS reassigned this panel's display ID.
+            disconnectedByID = disconnectedByID.filter { $0.value != hardwareID }
+        }
+        return didReconnect
     }
 
     // MARK: - Actions  (return nil on success, else a user-facing error string)

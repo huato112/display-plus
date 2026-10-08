@@ -10,6 +10,7 @@ A small macOS menu bar app for display power, HiDPI scaling and resolution selec
 - Select HiDPI scaling, resolution and refresh rate.
 - Restore saved display connection and mode preferences after sleep/wake.
 - Prevent turning off the last active display.
+- Automatically turn the built-in display back on when the last active external display is unplugged.
 
 Requires macOS 14 or later. Swift 6, SwiftUI and CoreGraphics, with no third-party dependencies.
 HiDPI and display power use dynamically resolved private SkyLight APIs; availability depends on macOS.
@@ -44,6 +45,10 @@ xcodebuild -scheme DisplayPlus -configuration Debug build
 ```
 
 The app runs in the menu bar. It does not require Accessibility or Screen Recording permission.
+
+Run the display recovery regression scenarios with `bash tests/run-display-recovery.sh`.
+They compile the connection service against simulated display APIs and isolated preferences,
+without changing your actual displays. Unplug/reconnect behavior still needs hardware verification.
 
 ## Source layout
 
