@@ -16,18 +16,26 @@ HiDPI and display power use dynamically resolved private SkyLight APIs; availabi
 
 ## Build and install
 
-Install Xcode and XcodeGen, then generate the project:
+Install Xcode and XcodeGen once:
 
 ```bash
 brew install xcodegen
-xcodegen generate
 ```
 
-Build, package a DMG, replace the app in `/Applications`, and launch it:
+Run one command to generate the Xcode project, build Release, install the app in
+`/Applications`, and launch it:
 
 ```bash
 ./build.sh
 ```
+
+The script works from any working directory and signs the app locally without an
+Apple Developer account. Build failures leave the installed app in place; the
+full build log is saved to `build/build.log`. If `/Applications` requires
+administrator access, the script asks for your password during installation.
+
+To also create `build/DisplayPlus.dmg`, run `./build.sh --dmg`.
+To install without launching, run `./build.sh --no-launch`.
 
 For a compile check:
 
@@ -45,6 +53,7 @@ The app runs in the menu bar. It does not require Accessibility or Screen Record
 - `Views/`: display rows, power switches, HiDPI scaling and mode selection.
 - `DesignSystem/`: shared colors, spacing and cards.
 
-Changes to source files or `project.yml` require `xcodegen generate`.
+`./build.sh` automatically regenerates the project after changes to source files
+or `project.yml`. For manual Xcode builds, run `xcodegen generate` first.
 Display power and mode switching need manual verification on real displays.
 The documents under `docs/superpowers/` describe earlier versions of the app.
